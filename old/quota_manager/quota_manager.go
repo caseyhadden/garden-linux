@@ -13,16 +13,6 @@ import (
 	"github.com/pivotal-golang/lager"
 )
 
-type QuotaManager interface {
-	SetLimits(logger lager.Logger, uid int, limits garden.DiskLimits) error
-	GetLimits(logger lager.Logger, uid int) (garden.DiskLimits, error)
-	GetUsage(logger lager.Logger, uid int) (garden.ContainerDiskStat, error)
-
-	MountPoint() string
-	Disable()
-	IsEnabled() bool
-}
-
 type LinuxQuotaManager struct {
 	enabled bool
 

@@ -20,7 +20,6 @@ import (
 	"github.com/cloudfoundry-incubator/garden-linux/old/bandwidth_manager"
 	"github.com/cloudfoundry-incubator/garden-linux/old/cgroups_manager"
 	"github.com/cloudfoundry-incubator/garden-linux/old/logging"
-	"github.com/cloudfoundry-incubator/garden-linux/old/quota_manager"
 	"github.com/cloudfoundry-incubator/garden-linux/process"
 	"github.com/cloudfoundry-incubator/garden-linux/process_tracker"
 	"github.com/cloudfoundry/gunk/command_runner"
@@ -33,6 +32,17 @@ type UndefinedPropertyError struct {
 
 func (err UndefinedPropertyError) Error() string {
 	return fmt.Sprintf("property does not exist: %s", err.Key)
+}
+
+//go:generate counterfeiter -o fakes/fake_quota_manager.go . QuotaManager
+type QuotaManager interface {
+	SetLimits(logger lager.Logger, cid string, limits garden.DiskLimits) error
+	GetLimits(logger lager.Logger, cid string) (garden.DiskLimits, error)
+	GetUsage(logger lager.Logger, cid string) (garden.ContainerDiskStat, error)
+
+	MountPoint() string
+	Disable()
+	IsEnabled() bool
 }
 
 type LinuxContainer struct {
@@ -60,7 +70,7 @@ type LinuxContainer struct {
 	runner command_runner.CommandRunner
 
 	cgroupsManager   cgroups_manager.CgroupsManager
-	quotaManager     quota_manager.QuotaManager
+	quotaManager     QuotaManager
 	bandwidthManager bandwidth_manager.BandwidthManager
 
 	processTracker process_tracker.ProcessTracker
@@ -145,7 +155,7 @@ func NewLinuxContainer(
 	portPool PortPool,
 	runner command_runner.CommandRunner,
 	cgroupsManager cgroups_manager.CgroupsManager,
-	quotaManager quota_manager.QuotaManager,
+	quotaManager QuotaManager,
 	bandwidthManager bandwidth_manager.BandwidthManager,
 	processTracker process_tracker.ProcessTracker,
 	env process.Env,

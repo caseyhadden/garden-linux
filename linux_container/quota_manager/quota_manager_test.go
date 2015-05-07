@@ -9,93 +9,112 @@ import (
 	"github.com/pivotal-golang/lager/lagertest"
 
 	"github.com/cloudfoundry-incubator/garden"
-	"github.com/cloudfoundry-incubator/garden-linux/old/quota_manager"
+	"github.com/cloudfoundry-incubator/garden-linux/linux_container/quota_manager"
 	"github.com/cloudfoundry/gunk/command_runner/fake_command_runner"
 	. "github.com/cloudfoundry/gunk/command_runner/fake_command_runner/matchers"
 )
 
-var _ = Describe("Linux Quota manager", func() {
+var _ = Describe("B-Tree FS Quota manager", func() {
 	var fakeRunner *fake_command_runner.FakeCommandRunner
 	var logger *lagertest.TestLogger
-	var quotaManager *quota_manager.LinuxQuotaManager
+	var quotaManager *quota_manager.BtrfsQuotaManager
+	var containerId string
 
 	BeforeEach(func() {
 		fakeRunner = fake_command_runner.New()
 		logger = lagertest.NewTestLogger("test")
 		quotaManager = quota_manager.New(fakeRunner, "/some/mount/point", "/root/path")
+		containerId = "some-container"
 	})
 
 	Describe("setting quotas", func() {
 		limits := garden.DiskLimits{
-			BlockSoft: 1,
-			BlockHard: 2,
+			ByteSoft: 1,
+			ByteHard: 2,
 
 			InodeSoft: 11,
 			InodeHard: 12,
 		}
 
-		It("executes setquota on the container depo's mount point", func() {
-			err := quotaManager.SetLimits(logger, 1234, limits)
-
-			Expect(err).ToNot(HaveOccurred())
-
-			Expect(fakeRunner).To(HaveExecutedSerially(
-				fake_command_runner.CommandSpec{
-					Path: "setquota",
-					Args: []string{
-						"-u", "1234",
-						"1", "2", "11", "12",
-						"/some/mount/point",
-					},
-				},
-			))
-		})
-
-		Context("when bytes are given", func() {
-			limits := garden.DiskLimits{
-				InodeSoft: 11,
-				InodeHard: 12,
-
-				ByteSoft: 102401,
-				ByteHard: 204801,
-			}
-
-			It("executes setquota with them converted to blocks", func() {
-				err := quotaManager.SetLimits(logger, 1234, limits)
-
-				Expect(err).ToNot(HaveOccurred())
-
-				Expect(fakeRunner).To(HaveExecutedSerially(
-					fake_command_runner.CommandSpec{
-						Path: "setquota",
-						Args: []string{
-							"-u", "1234",
-							"101", "201", "11", "12",
-							"/some/mount/point",
-						},
-					},
-				))
-			})
-		})
-
-		Context("when setquota fails", func() {
-			nastyError := errors.New("oh no!")
-
+		Context("when the subvolume exists", func() {
 			BeforeEach(func() {
 				fakeRunner.WhenRunning(
 					fake_command_runner.CommandSpec{
-						Path: "setquota",
-					}, func(*exec.Cmd) error {
-						return nastyError
+						Path: "btrfs",
+						Args: []string{
+							"subvolume", "list", "/some/mount/point",
+						},
+					},
+					func(cmd *exec.Cmd) error {
+						cmd.Stdout.Write([]byte(
+							`ID 11 gen 10 top level 5 path some/whatever/path
+ID 12 gen 10 top level 5 path some/whatever-1/path/some-container
+ID 13 gen 10 top level 5 path some/whatever-2/path
+`,
+						))
+
+						return nil
 					},
 				)
 			})
 
-			It("returns the error", func() {
-				err := quotaManager.SetLimits(logger, 1234, limits)
-				Expect(err).To(Equal(nastyError))
+			It("executes qgroup limit with the correct qgroup id", func() {
+				err := quotaManager.SetLimits(logger, "some-container", limits)
+				Expect(err).ToNot(HaveOccurred())
+
+				Expect(fakeRunner).To(HaveExecutedSerially(
+					fake_command_runner.CommandSpec{
+						Path: "btrfs",
+						Args: []string{
+							"qgroup", "limit", "2", "0/12", "/some/mount/point",
+						},
+					},
+				))
+			})
+
+			Context("when blocks are given", func() {
+				limits := garden.DiskLimits{
+					BlockSoft: 10,
+					BlockHard: 20,
+				}
+
+				It("executes qgroup limit with them converted to bytes", func() {
+					err := quotaManager.SetLimits(logger, containerId, limits)
+
+					Expect(err).ToNot(HaveOccurred())
+
+					Expect(fakeRunner).To(HaveExecutedSerially(
+						fake_command_runner.CommandSpec{
+							Path: "btrfs",
+							Args: []string{
+								"qgroup", "limit", "20480", "0/12", "/some/mount/point",
+							},
+						},
+					))
+				})
+			})
+
+			PContext("when executing qgroup limit fails", func() {
+				nastyError := errors.New("oh no!")
+
+				BeforeEach(func() {
+					fakeRunner.WhenRunning(
+						fake_command_runner.CommandSpec{
+							Path: "btrfs",
+						}, func(*exec.Cmd) error {
+							return nastyError
+						},
+					)
+				})
+
+				It("returns the error", func() {
+					err := quotaManager.SetLimits(logger, containerId, limits)
+					Expect(err).To(Equal(nastyError))
+				})
 			})
 		})
+
+		PContext("when the subvolume does not exist", func() {})
 
 		Context("when quotas are disabled", func() {
 			BeforeEach(func() {
@@ -103,7 +122,7 @@ var _ = Describe("Linux Quota manager", func() {
 			})
 
 			It("runs nothing", func() {
-				err := quotaManager.SetLimits(logger, 1234, limits)
+				err := quotaManager.SetLimits(logger, containerId, limits)
 
 				Expect(err).ToNot(HaveOccurred())
 
@@ -116,7 +135,7 @@ var _ = Describe("Linux Quota manager", func() {
 		})
 	})
 
-	Describe("getting quotas limits", func() {
+	PDescribe("getting quotas limits", func() {
 		It("executes repquota in the root path", func() {
 			fakeRunner.WhenRunning(
 				fake_command_runner.CommandSpec{
@@ -197,7 +216,7 @@ var _ = Describe("Linux Quota manager", func() {
 		})
 	})
 
-	Describe("getting usage", func() {
+	PDescribe("getting usage", func() {
 		It("executes repquota in the root path", func() {
 			fakeRunner.WhenRunning(
 				fake_command_runner.CommandSpec{
@@ -275,7 +294,7 @@ var _ = Describe("Linux Quota manager", func() {
 		})
 	})
 
-	Describe("getting the mount point", func() {
+	PDescribe("getting the mount point", func() {
 		It("returns the mount point of the container depot", func() {
 			Expect(quotaManager.MountPoint()).To(Equal("/some/mount/point"))
 		})

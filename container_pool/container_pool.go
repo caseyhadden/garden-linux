@@ -28,7 +28,6 @@ import (
 	"github.com/cloudfoundry-incubator/garden-linux/old/bandwidth_manager"
 	"github.com/cloudfoundry-incubator/garden-linux/old/cgroups_manager"
 	"github.com/cloudfoundry-incubator/garden-linux/old/logging"
-	"github.com/cloudfoundry-incubator/garden-linux/old/quota_manager"
 	"github.com/cloudfoundry-incubator/garden-linux/old/rootfs_provider"
 	"github.com/cloudfoundry-incubator/garden-linux/old/sysconfig"
 	"github.com/cloudfoundry-incubator/garden-linux/process"
@@ -80,7 +79,7 @@ type LinuxContainerPool struct {
 
 	runner command_runner.CommandRunner
 
-	quotaManager quota_manager.QuotaManager
+	quotaManager linux_container.QuotaManager
 
 	containerIDs chan string
 }
@@ -100,7 +99,7 @@ func New(
 	portPool linux_container.PortPool,
 	denyNetworks, allowNetworks []string,
 	runner command_runner.CommandRunner,
-	quotaManager quota_manager.QuotaManager,
+	quotaManager linux_container.QuotaManager,
 ) *LinuxContainerPool {
 	pool := &LinuxContainerPool{
 		logger: logger.Session("pool"),

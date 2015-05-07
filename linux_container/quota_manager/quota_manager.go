@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"strings"
 
 	"github.com/cloudfoundry-incubator/garden"
 	"github.com/cloudfoundry-incubator/garden-linux/old/logging"
@@ -13,7 +14,7 @@ import (
 	"github.com/pivotal-golang/lager"
 )
 
-type LinuxQuotaManager struct {
+type BtrfsQuotaManager struct {
 	enabled bool
 
 	binPath string
@@ -24,8 +25,8 @@ type LinuxQuotaManager struct {
 
 const QUOTA_BLOCK_SIZE = 1024
 
-func New(runner command_runner.CommandRunner, mountPoint, binPath string) *LinuxQuotaManager {
-	return &LinuxQuotaManager{
+func New(runner command_runner.CommandRunner, mountPoint, binPath string) *BtrfsQuotaManager {
+	return &BtrfsQuotaManager{
 		enabled: true,
 
 		binPath: binPath,
@@ -35,21 +36,21 @@ func New(runner command_runner.CommandRunner, mountPoint, binPath string) *Linux
 	}
 }
 
-func (m *LinuxQuotaManager) Disable() {
+func (m *BtrfsQuotaManager) Disable() {
 	m.enabled = false
 }
 
-func (m *LinuxQuotaManager) SetLimits(logger lager.Logger, uid int, limits garden.DiskLimits) error {
+func (m *BtrfsQuotaManager) SetLimits(logger lager.Logger, cid string, limits garden.DiskLimits) error {
 	if !m.enabled {
 		return nil
 	}
 
-	if limits.ByteSoft != 0 {
-		limits.BlockSoft = (limits.ByteSoft + QUOTA_BLOCK_SIZE - 1) / QUOTA_BLOCK_SIZE
+	if limits.BlockSoft != 0 {
+		limits.ByteSoft = limits.BlockSoft * QUOTA_BLOCK_SIZE
 	}
 
-	if limits.ByteHard != 0 {
-		limits.BlockHard = (limits.ByteHard + QUOTA_BLOCK_SIZE - 1) / QUOTA_BLOCK_SIZE
+	if limits.BlockHard != 0 {
+		limits.ByteHard = limits.BlockHard * QUOTA_BLOCK_SIZE
 	}
 
 	runner := logging.Runner{
@@ -57,21 +58,53 @@ func (m *LinuxQuotaManager) SetLimits(logger lager.Logger, uid int, limits garde
 		CommandRunner: m.runner,
 	}
 
-	return runner.Run(
-		exec.Command(
-			"setquota",
-			"-u",
-			fmt.Sprintf("%d", uid),
-			fmt.Sprintf("%d", limits.BlockSoft),
-			fmt.Sprintf("%d", limits.BlockHard),
-			fmt.Sprintf("%d", limits.InodeSoft),
-			fmt.Sprintf("%d", limits.InodeHard),
-			m.mountPoint,
-		),
-	)
+	listCmdR, listCmdW, err := os.Pipe()
+	if err != nil {
+		return fmt.Errorf("quota_manager: create OS pipe: %v", err)
+	}
+	defer listCmdR.Close()
+	defer listCmdW.Close()
+
+	listCmd := exec.Command("btrfs", "subvolume", "list", m.mountPoint)
+	listCmd.Stdout = listCmdW
+
+	if err = runner.Start(listCmd); err != nil {
+		return fmt.Errorf("quota_manager: failed to list subvolumes: %v", err)
+	}
+	defer runner.Wait(listCmd)
+
+	var path string
+	var qgroupId, skip int
+	found := false
+
+	for {
+		n, err := fmt.Fscanf(listCmdR, "ID %d gen %d top level %d path %s", &qgroupId, &skip, &skip, &path)
+		if err != nil {
+			return fmt.Errorf("quota_manager: failed to get subvolume qgroup id: %v", err)
+		}
+		if n != 4 {
+			break
+		}
+
+		if strings.Contains(path, cid) {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("quota_manager: subvolume not found")
+	}
+
+	cmd := exec.Command("btrfs", "qgroup", "limit", fmt.Sprintf("%d", limits.ByteHard), fmt.Sprintf("0/%d", qgroupId), m.mountPoint)
+	if err = runner.Run(cmd); err != nil {
+		return fmt.Errorf("quota_manager: failed to apply limit: %v", err)
+	}
+
+	return nil
 }
 
-func (m *LinuxQuotaManager) GetLimits(logger lager.Logger, uid int) (garden.DiskLimits, error) {
+func (m *BtrfsQuotaManager) GetLimits(logger lager.Logger, uid int) (garden.DiskLimits, error) {
 	if !m.enabled {
 		return garden.DiskLimits{}, nil
 	}
@@ -120,7 +153,7 @@ func (m *LinuxQuotaManager) GetLimits(logger lager.Logger, uid int) (garden.Disk
 	return limits, err
 }
 
-func (m *LinuxQuotaManager) GetUsage(logger lager.Logger, uid int) (garden.ContainerDiskStat, error) {
+func (m *BtrfsQuotaManager) GetUsage(logger lager.Logger, uid int) (garden.ContainerDiskStat, error) {
 	if !m.enabled {
 		return garden.ContainerDiskStat{}, nil
 	}
@@ -161,10 +194,10 @@ func (m *LinuxQuotaManager) GetUsage(logger lager.Logger, uid int) (garden.Conta
 	return usage, err
 }
 
-func (m *LinuxQuotaManager) MountPoint() string {
+func (m *BtrfsQuotaManager) MountPoint() string {
 	return m.mountPoint
 }
 
-func (m *LinuxQuotaManager) IsEnabled() bool {
+func (m *BtrfsQuotaManager) IsEnabled() bool {
 	return m.enabled
 }

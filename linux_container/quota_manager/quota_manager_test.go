@@ -2,7 +2,6 @@ package quota_manager_test
 
 import (
 	"errors"
-	"os"
 	"os/exec"
 
 	. "github.com/onsi/ginkgo"
@@ -15,7 +14,7 @@ import (
 	. "github.com/cloudfoundry/gunk/command_runner/fake_command_runner/matchers"
 )
 
-var _ = Describe("B-Tree FS Quota manager", func() {
+var _ = Describe("btrfs quota manager", func() {
 	var fakeRunner *fake_command_runner.FakeCommandRunner
 	var logger *lagertest.TestLogger
 	var quotaManager *quota_manager.BtrfsQuotaManager
@@ -128,7 +127,6 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 					},
 					func(cmd *exec.Cmd) error {
 						cmd.Stdout.Write(btrfsSubvolResponse)
-						cmd.Stdout.(*os.File).Close()
 						return nil
 					},
 				)
@@ -172,46 +170,36 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 
 				Expect(err).ToNot(HaveOccurred())
 
-				Expect(fakeRunner).ToNot(HaveExecutedSerially(
-					fake_command_runner.CommandSpec{
-						Path: "setquota",
-					},
-				))
+				for _, cmd := range fakeRunner.ExecutedCommands() {
+					Expect(cmd.Path).ToNot(Equal("btrfs"))
+				}
 			})
 		})
 	})
 
-	PDescribe("getting quotas limits", func() {
-		It("executes repquota in the root path", func() {
+	Describe("getting quotas limits", func() {
+		It("gets current quotas using btrfs", func() {
 			fakeRunner.WhenRunning(
-				fake_command_runner.CommandSpec{
-					Path: "/root/path/repquota",
-					Args: []string{"/some/mount/point", "1234"},
-				}, func(cmd *exec.Cmd) error {
-					cmd.Stdout.Write([]byte("1234 111 222 333 444 555 666 777 888\n"))
-
+				fake_command_runner.CommandSpec{}, func(cmd *exec.Cmd) error {
+					cmd.Stdout.Write([]byte("1000000\n"))
 					return nil
 				},
 			)
 
-			limits, err := quotaManager.GetLimits(logger, 1234)
+			limits, err := quotaManager.GetLimits(logger, containerId)
 			Expect(err).ToNot(HaveOccurred())
 
-			Expect(limits.BlockSoft).To(Equal(uint64(222)))
-			Expect(limits.BlockHard).To(Equal(uint64(333)))
-
-			Expect(limits.InodeSoft).To(Equal(uint64(666)))
-			Expect(limits.InodeHard).To(Equal(uint64(777)))
+			Expect(limits.ByteSoft).To(Equal(uint64(1000000)))
+			Expect(limits.ByteHard).To(Equal(uint64(1000000)))
 		})
 
-		Context("when repquota fails", func() {
+		Context("when getting quota using btrfs fails", func() {
 			disaster := errors.New("oh no!")
 
 			BeforeEach(func() {
 				fakeRunner.WhenRunning(
 					fake_command_runner.CommandSpec{
-						Path: "/root/path/repquota",
-						Args: []string{"/some/mount/point", "1234"},
+						Path: "sh",
 					}, func(cmd *exec.Cmd) error {
 						return disaster
 					},
@@ -219,8 +207,26 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 			})
 
 			It("returns the error", func() {
-				_, err := quotaManager.GetLimits(logger, 1234)
-				Expect(err).To(Equal(disaster))
+				_, err := quotaManager.GetLimits(logger, containerId)
+				Expect(err).To(MatchError(ContainSubstring("quota_manager: failed to get limit")))
+			})
+		})
+
+		Context("when getting quota using btrfs spews out malformed results", func() {
+			BeforeEach(func() {
+				fakeRunner.WhenRunning(
+					fake_command_runner.CommandSpec{
+						Path: "sh",
+					}, func(cmd *exec.Cmd) error {
+						cmd.Stdout.Write([]byte("Oops\n"))
+						return nil
+					},
+				)
+			})
+
+			It("returns the error", func() {
+				_, err := quotaManager.GetLimits(logger, containerId)
+				Expect(err).To(MatchError(ContainSubstring("quota_manager: failed to parse result")))
 			})
 		})
 
@@ -228,8 +234,8 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 			It("returns an error", func() {
 				fakeRunner.WhenRunning(
 					fake_command_runner.CommandSpec{
-						Path: "/root/path/repquota",
-						Args: []string{"/some/mount/point", "1234"},
+						Path: "btrfs",
+						// Args: []string{"/some/mount/point", "1234"},
 					}, func(cmd *exec.Cmd) error {
 						cmd.Stdout.Write([]byte("abc\n"))
 
@@ -237,7 +243,7 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 					},
 				)
 
-				_, err := quotaManager.GetLimits(logger, 1234)
+				_, err := quotaManager.GetLimits(logger, containerId)
 				Expect(err).To(HaveOccurred())
 			})
 		})
@@ -248,16 +254,14 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 			})
 
 			It("runs nothing", func() {
-				limits, err := quotaManager.GetLimits(logger, 1234)
+				limits, err := quotaManager.GetLimits(logger, containerId)
 				Expect(err).ToNot(HaveOccurred())
 
 				Expect(limits).To(BeZero())
 
-				Expect(fakeRunner).ToNot(HaveExecutedSerially(
-					fake_command_runner.CommandSpec{
-						Path: "/root/path/bin/repquota",
-					},
-				))
+				for _, cmd := range fakeRunner.ExecutedCommands() {
+					Expect(cmd.Path).ToNot(Equal("btrfs"))
+				}
 			})
 		})
 	})
@@ -331,11 +335,9 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 
 				Expect(usage).To(BeZero())
 
-				Expect(fakeRunner).ToNot(HaveExecutedSerially(
-					fake_command_runner.CommandSpec{
-						Path: "/root/path/repquota",
-					},
-				))
+				for _, cmd := range fakeRunner.ExecutedCommands() {
+					Expect(cmd.Path).ToNot(Equal("btrfs"))
+				}
 			})
 		})
 	})

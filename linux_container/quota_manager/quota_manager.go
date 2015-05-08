@@ -3,9 +3,9 @@ package quota_manager
 import (
 	"bytes"
 	"fmt"
-	"os"
 	"os/exec"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/cloudfoundry-incubator/garden"
@@ -58,28 +58,24 @@ func (m *BtrfsQuotaManager) SetLimits(logger lager.Logger, cid string, limits ga
 		CommandRunner: m.runner,
 	}
 
-	listCmdR, listCmdW, err := os.Pipe()
-	if err != nil {
-		return fmt.Errorf("quota_manager: create OS pipe: %v", err)
-	}
-	defer listCmdR.Close()
-	defer listCmdW.Close()
-
+	// graphpath!
 	listCmd := exec.Command("btrfs", "subvolume", "list", m.mountPoint)
-	listCmd.Stdout = listCmdW
+	var listOut bytes.Buffer
+	listCmd.Stdout = &listOut
 
-	if err = runner.Start(listCmd); err != nil {
+	if err := runner.Run(listCmd); err != nil {
 		return fmt.Errorf("quota_manager: failed to list subvolumes: %v", err)
 	}
-	defer runner.Wait(listCmd)
 
 	var path string
 	var qgroupId, skip int
 	found := false
 
-	for {
+	var err error
+	lines := strings.Split(listOut.String(), "\n")
+	for _, line := range lines {
 		var n int
-		n, err = fmt.Fscanf(listCmdR, "ID %d gen %d top level %d path %s", &qgroupId, &skip, &skip, &path)
+		n, err = fmt.Sscanf(line, "ID %d gen %d top level %d path %s", &qgroupId, &skip, &skip, &path)
 
 		if err != nil || n != 4 {
 			break
@@ -103,56 +99,44 @@ func (m *BtrfsQuotaManager) SetLimits(logger lager.Logger, cid string, limits ga
 	return nil
 }
 
-func (m *BtrfsQuotaManager) GetLimits(logger lager.Logger, uid int) (garden.DiskLimits, error) {
+func (m *BtrfsQuotaManager) GetLimits(logger lager.Logger, cid string) (garden.DiskLimits, error) {
+	var quotaOut bytes.Buffer
+	var byteLimit uint64
+	var err error
+
 	if !m.enabled {
 		return garden.DiskLimits{}, nil
 	}
-
-	repquota := exec.Command(path.Join(m.binPath, "repquota"), m.mountPoint, fmt.Sprintf("%d", uid))
-
-	limits := garden.DiskLimits{}
-
-	repR, repW, err := os.Pipe()
-	if err != nil {
-		return limits, err
-	}
-
-	defer repR.Close()
-	defer repW.Close()
-
-	repquota.Stdout = repW
 
 	runner := logging.Runner{
 		Logger:        logger,
 		CommandRunner: m.runner,
 	}
 
-	err = runner.Start(repquota)
-	if err != nil {
-		return limits, err
+	limits := garden.DiskLimits{}
+
+	quotaCmd := exec.Command("sh", "-c", fmt.Sprintf("btrfs qgroup show -rF --raw %s | tail -n 1 | awk '{ print $4 }'", m.mountPoint))
+	quotaCmd.Stdout = &quotaOut
+
+	if err = runner.Run(quotaCmd); err != nil {
+		return limits, fmt.Errorf("quota_manager: failed to get limit: %s", err)
 	}
 
-	defer runner.Wait(repquota)
+	if byteLimit, err = strconv.ParseUint(strings.Trim(quotaOut.String(), "\n"), 10, 64); err != nil {
+		return limits, fmt.Errorf("quota_manager: failed to parse result: %s", err)
+	}
 
-	var skip uint32
-
-	_, err = fmt.Fscanf(
-		repR,
-		"%d %d %d %d %d %d %d %d",
-		&skip,
-		&skip,
-		&limits.BlockSoft,
-		&limits.BlockHard,
-		&skip,
-		&skip,
-		&limits.InodeSoft,
-		&limits.InodeHard,
-	)
+	limits.ByteHard = byteLimit
+	limits.ByteSoft = byteLimit
 
 	return limits, err
 }
 
-func (m *BtrfsQuotaManager) GetUsage(logger lager.Logger, uid int) (garden.ContainerDiskStat, error) {
+func (m *BtrfsQuotaManager) GetUsage(logger lager.Logger, cid string) (garden.ContainerDiskStat, error) {
+	//func (m *BtrfsQuotaManager) GetUsage(logger lager.Logger, uid int) (garden.ContainerDiskStat, error) {
+	// TODO properly move to cid.
+	uid := 123
+
 	if !m.enabled {
 		return garden.ContainerDiskStat{}, nil
 	}

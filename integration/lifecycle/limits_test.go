@@ -6,7 +6,7 @@ import (
 	. "github.com/onsi/gomega"
 )
 
-var _ = FDescribe("Limits", func() {
+var _ = Describe("Limits", func() {
 	var container garden.Container
 
 	var privilegedContainer bool
@@ -72,7 +72,7 @@ var _ = FDescribe("Limits", func() {
 						dd, err := container.Run(garden.ProcessSpec{
 							User: "root",
 							Path: "dd",
-							Args: []string{"if=/dev/zero", "of=/home/bob/test", "count=102400"},
+							Args: []string{"if=/dev/zero", "of=/root/test", "count=102400"},
 						}, garden.ProcessIO{})
 						Expect(err).ToNot(HaveOccurred())
 						Expect(dd.Wait()).ToNot(Equal(0))

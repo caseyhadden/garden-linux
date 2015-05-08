@@ -78,11 +78,10 @@ func (m *BtrfsQuotaManager) SetLimits(logger lager.Logger, cid string, limits ga
 	found := false
 
 	for {
-		n, err := fmt.Fscanf(listCmdR, "ID %d gen %d top level %d path %s", &qgroupId, &skip, &skip, &path)
-		if err != nil {
-			return fmt.Errorf("quota_manager: failed to get subvolume qgroup id: %v", err)
-		}
-		if n != 4 {
+		var n int
+		n, err = fmt.Fscanf(listCmdR, "ID %d gen %d top level %d path %s", &qgroupId, &skip, &skip, &path)
+
+		if err != nil || n != 4 {
 			break
 		}
 
@@ -93,7 +92,7 @@ func (m *BtrfsQuotaManager) SetLimits(logger lager.Logger, cid string, limits ga
 	}
 
 	if !found {
-		return fmt.Errorf("quota_manager: subvolume not found")
+		return fmt.Errorf("quota_manager: subvolume not found: %s", err)
 	}
 
 	cmd := exec.Command("btrfs", "qgroup", "limit", fmt.Sprintf("%d", limits.ByteHard), fmt.Sprintf("0/%d", qgroupId), m.mountPoint)

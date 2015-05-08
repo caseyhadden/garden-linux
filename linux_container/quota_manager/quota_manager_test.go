@@ -2,6 +2,7 @@ package quota_manager_test
 
 import (
 	"errors"
+	"os"
 	"os/exec"
 
 	. "github.com/onsi/ginkgo"
@@ -94,7 +95,7 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 				})
 			})
 
-			PContext("when executing qgroup limit fails", func() {
+			Context("when executing qgroup limit fails", func() {
 				nastyError := errors.New("oh no!")
 
 				BeforeEach(func() {
@@ -109,12 +110,57 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 
 				It("returns the error", func() {
 					err := quotaManager.SetLimits(logger, containerId, limits)
-					Expect(err).To(Equal(nastyError))
+					Expect(err).To(MatchError("quota_manager: failed to apply limit: oh no!"))
 				})
 			})
 		})
 
-		PContext("when the subvolume does not exist", func() {})
+		Context("when the desired subvolume cannot be found", func() {
+			var btrfsSubvolResponse []byte
+
+			JustBeforeEach(func() {
+				fakeRunner.WhenRunning(
+					fake_command_runner.CommandSpec{
+						Path: "btrfs",
+						Args: []string{
+							"subvolume", "list", "/some/mount/point",
+						},
+					},
+					func(cmd *exec.Cmd) error {
+						cmd.Stdout.Write(btrfsSubvolResponse)
+						cmd.Stdout.(*os.File).Close()
+						return nil
+					},
+				)
+			})
+
+			Context("When there are no subvolumes", func() {
+				BeforeEach(func() {
+					btrfsSubvolResponse = []byte("")
+				})
+
+				It("returns an error", func() {
+					err := quotaManager.SetLimits(logger, containerId, limits)
+					Expect(err).To(MatchError(ContainSubstring("quota_manager: subvolume not found")))
+				})
+			})
+
+			Context("when there are subvolumes and the container subvolume does not exist", func() {
+
+				BeforeEach(func() {
+					btrfsSubvolResponse = []byte(
+						`ID 11 gen 10 top level 5 path some/whatever/path
+ID 13 gen 10 top level 5 path some/whatever-2/path
+`,
+					)
+				})
+
+				It("returns an error", func() {
+					err := quotaManager.SetLimits(logger, containerId, limits)
+					Expect(err).To(MatchError(ContainSubstring("quota_manager: subvolume not found")))
+				})
+			})
+		})
 
 		Context("when quotas are disabled", func() {
 			BeforeEach(func() {

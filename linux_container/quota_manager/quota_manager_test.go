@@ -19,11 +19,13 @@ var _ = Describe("btrfs quota manager", func() {
 	var logger *lagertest.TestLogger
 	var quotaManager *quota_manager.BtrfsQuotaManager
 	var containerId string
+	var graphRoot string
 
 	BeforeEach(func() {
 		fakeRunner = fake_command_runner.New()
 		logger = lagertest.NewTestLogger("test")
-		quotaManager = quota_manager.New(fakeRunner, "/some/mount/point", "/root/path")
+		graphRoot = "/graph/root/path"
+		quotaManager = quota_manager.New(fakeRunner, "/some/mount/point", graphRoot)
 		containerId = "some-container"
 	})
 
@@ -42,14 +44,14 @@ var _ = Describe("btrfs quota manager", func() {
 					fake_command_runner.CommandSpec{
 						Path: "btrfs",
 						Args: []string{
-							"subvolume", "list", "/some/mount/point",
+							"subvolume", "list", graphRoot,
 						},
 					},
 					func(cmd *exec.Cmd) error {
 						cmd.Stdout.Write([]byte(
-							`ID 11 gen 10 top level 5 path some/whatever/path
-ID 12 gen 10 top level 5 path some/whatever-1/path/some-container
-ID 13 gen 10 top level 5 path some/whatever-2/path
+							`ID 11 gen 10 top level 5 path root/path/some/whatever/path
+ID 12 gen 10 top level 5 path root/path/some/whatever-1/path/some-container
+ID 13 gen 10 top level 5 path root/path/some/whatever-2/path
 `,
 						))
 
@@ -66,7 +68,7 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 					fake_command_runner.CommandSpec{
 						Path: "btrfs",
 						Args: []string{
-							"qgroup", "limit", "2", "0/12", "/some/mount/point",
+							"qgroup", "limit", "2", "0/12", graphRoot + "/some/whatever-1/path/some-container",
 						},
 					},
 				))
@@ -87,8 +89,7 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 						fake_command_runner.CommandSpec{
 							Path: "btrfs",
 							Args: []string{
-								"qgroup", "limit", "20480", "0/12", "/some/mount/point",
-							},
+								"qgroup", "limit", "20480", "0/12", graphRoot + "/some/whatever-1/path/some-container"},
 						},
 					))
 				})
@@ -178,6 +179,28 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 	})
 
 	Describe("getting quotas limits", func() {
+		BeforeEach(func() {
+			fakeRunner.WhenRunning(
+				fake_command_runner.CommandSpec{
+					Path: "btrfs",
+					Args: []string{
+						"subvolume", "list", graphRoot,
+					},
+				},
+				func(cmd *exec.Cmd) error {
+					cmd.Stdout.Write([]byte(
+						`ID 11 gen 10 top level 5 path path/whatever/volume1
+ID 12 gen 10 top level 5 path path/whatever/volume2
+ID 13 gen 10 top level 5 path path/whatever/volume3
+ID 14 gen 10 top level 5 path path/whatever/some-container
+`,
+					))
+
+					return nil
+				},
+			)
+		})
+
 		It("gets current quotas using btrfs", func() {
 			fakeRunner.WhenRunning(
 				fake_command_runner.CommandSpec{}, func(cmd *exec.Cmd) error {
@@ -266,81 +289,81 @@ ID 13 gen 10 top level 5 path some/whatever-2/path
 		})
 	})
 
-	PDescribe("getting usage", func() {
-		It("executes repquota in the root path", func() {
-			fakeRunner.WhenRunning(
-				fake_command_runner.CommandSpec{
-					Path: "/root/path/repquota",
-					Args: []string{"/some/mount/point", "1234"},
-				}, func(cmd *exec.Cmd) error {
-					cmd.Stdout.Write([]byte("1234 111 222 333 444 555 666 777 888\n"))
+	//PDescribe("getting usage", func() {
+	//	It("executes repquota in the root path", func() {
+	//		fakeRunner.WhenRunning(
+	//			fake_command_runner.CommandSpec{
+	//				Path: "/root/path/repquota",
+	//				Args: []string{"/some/mount/point", "1234"},
+	//			}, func(cmd *exec.Cmd) error {
+	//				cmd.Stdout.Write([]byte("1234 111 222 333 444 555 666 777 888\n"))
 
-					return nil
-				},
-			)
+	//				return nil
+	//			},
+	//		)
 
-			limits, err := quotaManager.GetUsage(logger, 1234)
-			Expect(err).ToNot(HaveOccurred())
+	//		limits, err := quotaManager.GetUsage(logger, 1234)
+	//		Expect(err).ToNot(HaveOccurred())
 
-			Expect(limits.BytesUsed).To(Equal(uint64(111)))
-			Expect(limits.InodesUsed).To(Equal(uint64(555)))
-		})
+	//		Expect(limits.BytesUsed).To(Equal(uint64(111)))
+	//		Expect(limits.InodesUsed).To(Equal(uint64(555)))
+	//	})
 
-		Context("when repquota fails", func() {
-			disaster := errors.New("oh no!")
+	//	Context("when repquota fails", func() {
+	//		disaster := errors.New("oh no!")
 
-			BeforeEach(func() {
-				fakeRunner.WhenRunning(
-					fake_command_runner.CommandSpec{
-						Path: "/root/path/repquota",
-						Args: []string{"/some/mount/point", "1234"},
-					}, func(cmd *exec.Cmd) error {
-						return disaster
-					},
-				)
-			})
+	//		BeforeEach(func() {
+	//			fakeRunner.WhenRunning(
+	//				fake_command_runner.CommandSpec{
+	//					Path: "/root/path/repquota",
+	//					Args: []string{"/some/mount/point", "1234"},
+	//				}, func(cmd *exec.Cmd) error {
+	//					return disaster
+	//				},
+	//			)
+	//		})
 
-			It("returns the error", func() {
-				_, err := quotaManager.GetUsage(logger, 1234)
-				Expect(err).To(Equal(disaster))
-			})
-		})
+	//		It("returns the error", func() {
+	//			_, err := quotaManager.GetUsage(logger, 1234)
+	//			Expect(err).To(Equal(disaster))
+	//		})
+	//	})
 
-		Context("when the output of repquota is malformed", func() {
-			It("returns an error", func() {
-				fakeRunner.WhenRunning(
-					fake_command_runner.CommandSpec{
-						Path: "/root/path/repquota",
-						Args: []string{"/some/mount/point", "1234"},
-					}, func(cmd *exec.Cmd) error {
-						cmd.Stdout.Write([]byte("abc\n"))
+	//	Context("when the output of repquota is malformed", func() {
+	//		It("returns an error", func() {
+	//			fakeRunner.WhenRunning(
+	//				fake_command_runner.CommandSpec{
+	//					Path: "/root/path/repquota",
+	//					Args: []string{"/some/mount/point", "1234"},
+	//				}, func(cmd *exec.Cmd) error {
+	//					cmd.Stdout.Write([]byte("abc\n"))
 
-						return nil
-					},
-				)
+	//					return nil
+	//				},
+	//			)
 
-				_, err := quotaManager.GetUsage(logger, 1234)
-				Expect(err).To(HaveOccurred())
-			})
-		})
+	//			_, err := quotaManager.GetUsage(logger, 1234)
+	//			Expect(err).To(HaveOccurred())
+	//		})
+	//	})
 
-		Context("when quotas are disabled", func() {
-			BeforeEach(func() {
-				quotaManager.Disable()
-			})
+	//	Context("when quotas are disabled", func() {
+	//		BeforeEach(func() {
+	//			quotaManager.Disable()
+	//		})
 
-			It("runs nothing", func() {
-				usage, err := quotaManager.GetUsage(logger, 1234)
-				Expect(err).ToNot(HaveOccurred())
+	//		It("runs nothing", func() {
+	//			usage, err := quotaManager.GetUsage(logger, 1234)
+	//			Expect(err).ToNot(HaveOccurred())
 
-				Expect(usage).To(BeZero())
+	//			Expect(usage).To(BeZero())
 
-				for _, cmd := range fakeRunner.ExecutedCommands() {
-					Expect(cmd.Path).ToNot(Equal("btrfs"))
-				}
-			})
-		})
-	})
+	//			for _, cmd := range fakeRunner.ExecutedCommands() {
+	//				Expect(cmd.Path).ToNot(Equal("btrfs"))
+	//			}
+	//		})
+	//	})
+	//})
 
 	PDescribe("getting the mount point", func() {
 		It("returns the mount point of the container depot", func() {

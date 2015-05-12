@@ -53,7 +53,7 @@ var _ = Describe("Limits", func() {
 		})
 	})
 
-	FDescribe("Disk quotas", func() {
+	Describe("Disk quotas", func() {
 		Context("on a privileged Docker container", func() {
 			BeforeEach(func() {
 				privilegedContainer = true
@@ -61,10 +61,19 @@ var _ = Describe("Limits", func() {
 			})
 
 			Context("when there is a disk quota", func() {
+				quotaLimit := garden.DiskLimits{
+					ByteSoft: 10 * 1024 * 1024,
+					ByteHard: 10 * 1024 * 1024,
+				}
+
 				JustBeforeEach(func() {
-					Expect(container.LimitDisk(garden.DiskLimits{
-						ByteHard: 5 * 1024 * 1024,
-					})).To(Succeed())
+					Expect(container.LimitDisk(quotaLimit)).To(Succeed())
+				})
+
+				It("reports the correct disk limit size of the container", func() {
+					limit, err := container.CurrentDiskLimits()
+					Expect(err).ToNot(HaveOccurred())
+					Expect(limit).To(Equal(quotaLimit))
 				})
 
 				Context("and run a process that exceeds the quota as root", func() {
@@ -72,7 +81,7 @@ var _ = Describe("Limits", func() {
 						dd, err := container.Run(garden.ProcessSpec{
 							User: "root",
 							Path: "dd",
-							Args: []string{"if=/dev/zero", "of=/root/test", "count=102400"},
+							Args: []string{"if=/dev/zero", "of=/root/test", "count=152400"},
 						}, garden.ProcessIO{})
 						Expect(err).ToNot(HaveOccurred())
 						Expect(dd.Wait()).ToNot(Equal(0))
@@ -84,7 +93,7 @@ var _ = Describe("Limits", func() {
 						addUser, err := container.Run(garden.ProcessSpec{
 							User: "root",
 							Path: "adduser",
-							Args: []string{"-D", "bob"},
+							Args: []string{"-D", "-g", "", "bob"},
 						}, garden.ProcessIO{})
 						Expect(err).ToNot(HaveOccurred())
 						Expect(addUser.Wait()).To(Equal(0))
@@ -92,7 +101,7 @@ var _ = Describe("Limits", func() {
 						dd, err := container.Run(garden.ProcessSpec{
 							User: "bob",
 							Path: "dd",
-							Args: []string{"if=/dev/zero", "of=/home/bob/test", "count=102400"},
+							Args: []string{"if=/dev/zero", "of=/home/bob/test", "count=152400"},
 						}, garden.ProcessIO{})
 						Expect(err).ToNot(HaveOccurred())
 						Expect(dd.Wait()).ToNot(Equal(0))

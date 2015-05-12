@@ -250,7 +250,7 @@ func Main() {
 
 	runner := sysconfig.NewRunner(config, linux_command_runner.New())
 
-	quotaManager := quota_manager.New(runner, getMountPoint(logger, *depotPath), *binPath)
+	quotaManager := quota_manager.New(runner, getMountPoint(logger, *depotPath), *graphRoot)
 
 	if *disableQuotas {
 		quotaManager.Disable()

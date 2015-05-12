@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os/exec"
-	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -15,22 +15,20 @@ import (
 )
 
 type BtrfsQuotaManager struct {
-	enabled bool
-
-	binPath string
-	runner  command_runner.CommandRunner
-
+	enabled    bool
 	mountPoint string
+	graphRoot  string
+	runner     command_runner.CommandRunner
 }
 
 const QUOTA_BLOCK_SIZE = 1024
 
-func New(runner command_runner.CommandRunner, mountPoint, binPath string) *BtrfsQuotaManager {
+func New(runner command_runner.CommandRunner, mountPoint, graphRoot string) *BtrfsQuotaManager {
 	return &BtrfsQuotaManager{
 		enabled: true,
 
-		binPath: binPath,
-		runner:  runner,
+		graphRoot: graphRoot,
+		runner:    runner,
 
 		mountPoint: mountPoint,
 	}
@@ -58,40 +56,13 @@ func (m *BtrfsQuotaManager) SetLimits(logger lager.Logger, cid string, limits ga
 		CommandRunner: m.runner,
 	}
 
-	// graphpath!
-	listCmd := exec.Command("btrfs", "subvolume", "list", m.mountPoint)
-	var listOut bytes.Buffer
-	listCmd.Stdout = &listOut
+	qgroupId, path, err := m.volumeInfo(logger, cid)
 
-	if err := runner.Run(listCmd); err != nil {
-		return fmt.Errorf("quota_manager: failed to list subvolumes: %v", err)
+	if err != nil {
+		return err
 	}
 
-	var path string
-	var qgroupId, skip int
-	found := false
-
-	var err error
-	lines := strings.Split(listOut.String(), "\n")
-	for _, line := range lines {
-		var n int
-		n, err = fmt.Sscanf(line, "ID %d gen %d top level %d path %s", &qgroupId, &skip, &skip, &path)
-
-		if err != nil || n != 4 {
-			break
-		}
-
-		if strings.Contains(path, cid) {
-			found = true
-			break
-		}
-	}
-
-	if !found {
-		return fmt.Errorf("quota_manager: subvolume not found: %s", err)
-	}
-
-	cmd := exec.Command("btrfs", "qgroup", "limit", fmt.Sprintf("%d", limits.ByteHard), fmt.Sprintf("0/%d", qgroupId), m.mountPoint)
+	cmd := exec.Command("btrfs", "qgroup", "limit", fmt.Sprintf("%d", limits.ByteHard), fmt.Sprintf("0/%d", qgroupId), path)
 	if err = runner.Run(cmd); err != nil {
 		return fmt.Errorf("quota_manager: failed to apply limit: %v", err)
 	}
@@ -114,8 +85,12 @@ func (m *BtrfsQuotaManager) GetLimits(logger lager.Logger, cid string) (garden.D
 	}
 
 	limits := garden.DiskLimits{}
+	_, path, err := m.volumeInfo(logger, cid)
+	if err != nil {
+		return limits, err
+	}
 
-	quotaCmd := exec.Command("sh", "-c", fmt.Sprintf("btrfs qgroup show -rF --raw %s | tail -n 1 | awk '{ print $4 }'", m.mountPoint))
+	quotaCmd := exec.Command("sh", "-c", fmt.Sprintf("btrfs qgroup show -rF --raw %s | tail -n 1 | awk '{ print $4 }'", path))
 	quotaCmd.Stdout = &quotaOut
 
 	if err = runner.Run(quotaCmd); err != nil {
@@ -141,7 +116,7 @@ func (m *BtrfsQuotaManager) GetUsage(logger lager.Logger, cid string) (garden.Co
 		return garden.ContainerDiskStat{}, nil
 	}
 
-	repquota := exec.Command(path.Join(m.binPath, "repquota"), m.mountPoint, fmt.Sprintf("%d", uid))
+	repquota := exec.Command("repquota", m.mountPoint, fmt.Sprintf("%d", uid))
 
 	usage := garden.ContainerDiskStat{}
 
@@ -183,4 +158,49 @@ func (m *BtrfsQuotaManager) MountPoint() string {
 
 func (m *BtrfsQuotaManager) IsEnabled() bool {
 	return m.enabled
+}
+
+func (m *BtrfsQuotaManager) volumeInfo(logger lager.Logger, cid string) (int, string, error) {
+	runner := logging.Runner{
+		Logger:        logger,
+		CommandRunner: m.runner,
+	}
+
+	// graphpath!
+	listCmd := exec.Command("btrfs", "subvolume", "list", m.graphRoot)
+	var listOut bytes.Buffer
+	listCmd.Stdout = &listOut
+
+	if err := runner.Run(listCmd); err != nil {
+		return -1, "", fmt.Errorf("quota_manager: failed to list subvolumes: %v", err)
+	}
+
+	var path string
+	var qgroupId, skip int
+	found := false
+
+	var err error
+	lines := strings.Split(listOut.String(), "\n")
+	for _, line := range lines {
+		var n int
+		n, err = fmt.Sscanf(line, "ID %d gen %d top level %d path %s", &qgroupId, &skip, &skip, &path)
+
+		if err != nil || n != 4 {
+			break
+		}
+
+		if strings.Contains(path, cid) {
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return -1, "", fmt.Errorf("quota_manager: subvolume not found: %s", err)
+	}
+
+	volume := strings.Split(strings.Trim(m.graphRoot, "/"), "/")[0]
+	path = filepath.Join("/", volume, path)
+
+	return qgroupId, path, nil
 }
